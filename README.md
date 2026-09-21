@@ -79,7 +79,6 @@ python ikuai_gui_qt.py        # PySide6 版（推荐）
 python ikuai_gui.py           # Tkinter 备份版
 ```
 
-> 也可直接双击仓库里的 `启动GUI-QT.bat`（自动使用预设 venv 路径）。
 
 ### 首次连接
 
@@ -167,11 +166,9 @@ ikuai-ap-tool/
 ├── ikuai_gui.py           # Tkinter 备份版
 ├── ikuai_service.py       # 服务层（Playwright + 双 schema）
 ├── ikuai_config.py        # 加密配置
-├── scripts/
-│   ├── setup_gui_env.bat  # 一键建环境
-│   └── 打包exe.bat        # 一键重打包
+├── scripts/               # 辅助脚本
 ├── _*test.py              # 12 套离线测试
-└── 启动GUI-QT.bat         # 一键启动
+└── ikuai_config.py        # 加密配置模块
 ```
 
 ## 📄 许可
