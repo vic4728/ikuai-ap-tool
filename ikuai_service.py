@@ -85,6 +85,10 @@ def browser_missing_hint(err_text: str) -> str | None:
     """连接报错里出现『浏览器可执行文件不存在』时，返回中文部署指引。
 
     供 GUI 在连接失败弹窗里附上（比 playwright 官方英文提示友好）。
+    自动诊断常见摆放错误：
+      - exe 旁有"便携浏览器包"之类的外层目录（拷贝时多带了一层）
+      - ms-playwright 里直接是 chrome-headless-shell-win64（少了一层）
+      - 拷的是 chromium_headless_shell-1243 但没放进 ms-playwright 里
     不是这类错误返回 None。
     """
     if ("Executable doesn't exist" not in (err_text or "")
@@ -92,17 +96,61 @@ def browser_missing_hint(err_text: str) -> str | None:
         return None
     base = Path(sys.executable if getattr(sys, "frozen", False)
                 else __file__).resolve().parent
-    return (
-        "未找到 Playwright 浏览器内核（首次使用需准备，二选一）：\n\n"
-        "方式 A（便携，无需装 Python）：\n"
-        "  在 exe 旁放 ms-playwright\\chromium_headless_shell-1243\\\n"
-        "  （从已可用机器拷贝该文件夹，约 271 MB）\n\n"
-        "方式 B（本机安装，需 Python）：\n"
-        "  pip install playwright\n"
-        "  playwright install chromium\n\n"
-        "当前搜索位置：\n  %s\n  %%LOCALAPPDATA%%\\ms-playwright"
-        % (base / "ms-playwright")
-    )
+    lines = [
+        "未找到 Playwright 浏览器内核（首次使用需准备，二选一）：",
+        "",
+        "方式 A（便携，无需装 Python）：",
+        "  在 exe 旁按此结构摆放（拷贝时注意层级！）：",
+        "  %s" % (base / "ms-playwright" / "chromium_headless_shell-1243"),
+        "  （从已可用机器拷贝 chromium_headless_shell-1243 文件夹，约 271 MB）",
+        "",
+        "方式 B（本机安装，需 Python）：",
+        "  pip install playwright",
+        "  playwright install chromium",
+        "",
+    ]
+    # ---- 自动诊断摆放错误 ----
+    diags = []
+    msp = base / "ms-playwright"
+    if not msp.is_dir():
+        # exe 旁有没有疑似摆错的外层目录（含 chromium* 的目录）
+        for p in base.iterdir():
+            if p.is_dir() and any(c.name.startswith("chromium")
+                                  for c in p.iterdir() if c.is_dir()):
+                diags.append(
+                    "检测到 %r 里就有浏览器 —— 它应该是 ms-playwright，"
+                    "请把文件夹改名为 ms-playwright" % p.name)
+                break
+            if p.is_dir() and p.name != "output":
+                inner = p / "chromium_headless_shell-1243"
+                inner2 = (p / "ms-playwright" /
+                          "chromium_headless_shell-1243")
+                if inner2.is_dir():
+                    diags.append(
+                        "浏览器在 %r\\ms-playwright\\ 里 —— 多包了一层 %r，"
+                        "请把里面的 ms-playwright 移到 exe 旁"
+                        % (p.name, p.name))
+                    break
+                if inner.is_dir():
+                    diags.append(
+                        "chromium_headless_shell-1243 在 %r 里 —— "
+                        "应放入 ms-playwright\\ 子目录" % p.name)
+                    break
+    else:
+        subs = [c.name for c in msp.iterdir()]
+        if subs and not any(s.startswith("chromium") for s in subs):
+            diags.append("ms-playwright 里是 %r —— 缺少 "
+                         "chromium_headless_shell-1243 这一层" % subs[:3])
+        elif not subs:
+            diags.append("ms-playwright 是空目录，浏览器没拷进来")
+    if diags:
+        lines.append("── 自动诊断 ──")
+        lines.extend("  ⚠ " + d for d in diags)
+        lines.append("")
+    lines.append("当前搜索位置：")
+    lines.append("  %s" % (base / "ms-playwright"))
+    lines.append("  %LOCALAPPDATA%\\ms-playwright")
+    return "\n".join(lines)
 
 
 _fix_playwright_browsers_path()
