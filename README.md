@@ -29,7 +29,7 @@
 
 ## 🖼 界面预览
 
-![界面预览](https://github.com/vic4728/ikuai-ap-tool/releases/download/v1.0/ikuai-ap-tool-hot.png)
+![界面预览](docs/ikuai-ap-tool-hot.png)
 
 离线 AP 行底色变红、重启中变黄，状态列彩色文字，一目了然。
 
