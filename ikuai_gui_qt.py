@@ -1423,7 +1423,118 @@ def _now() -> str:
     return datetime.now().strftime("%H:%M:%S")
 
 
+def _ensure_portable_browsers() -> bool:
+    """首启自释放浏览器内核（自解压方案）。
+
+    打包时把 ms-playwright.zip 拼在 exe 尾部（打包脚本完成）。
+    本函数在主窗口前执行：
+      - exe 旁 ms-playwright\\ 已有 chromium* -> 直接返回（秒开）
+      - exe 尾部有捆绑数据 -> 弹进度窗释放到 exe 旁 -> 返回
+      - 都没有（普通打包）-> 返回，走原有探测/提示逻辑
+    返回 False 表示释放失败（缺空间/损坏），弹错误后仍继续启动
+    （用户还能用方式 B 自装）。
+    """
+    import zipfile
+    import struct
+
+    exe = Path(sys.executable)
+    if not getattr(sys, "frozen", False):
+        return True                      # 源码运行不处理
+    base = exe.parent
+    msp = base / "ms-playwright"
+
+    # 已就绪？（有 chromium* 子目录即认为可用）
+    if msp.is_dir() and any(p.name.startswith("chromium")
+                            for p in msp.iterdir() if p.is_dir()):
+        return True
+
+    # 读 exe 尾部魔数
+    MARK = b"IKUAI_BROWSER_BUNDLE_V1"
+    try:
+        with open(exe, "rb") as f:
+            f.seek(0, 2)
+            total = f.tell()
+            f.seek(total - len(MARK) - 12)
+            tail = f.read(12 + len(MARK))
+        if len(tail) < 12 + len(MARK) or tail[12:] != MARK:
+            return True                  # 无捆绑 -> 走提示逻辑
+        zsize, = struct.unpack("<Q", tail[:8])
+        magic4 = tail[8:12]
+        if magic4 != b"IKPL":
+            return True
+        offset = total - len(MARK) - 12 - zsize
+        if offset <= 0:
+            return True
+    except OSError:
+        return True
+
+    # ---- 有捆绑：弹窗 + 进度条释放 ----
+    app = QApplication.instance()
+    owns_app = app is None
+    if owns_app:
+        app = QApplication(sys.argv)
+        app.setStyle("Fusion")
+
+    from PySide6.QtWidgets import QProgressDialog
+
+    dlg = QProgressDialog(
+        "首次启动：正在释放浏览器内核到程序目录…\n"
+        "（约 275 MB，仅此一次，之后秒启动）",
+        None, 0, 100)
+    dlg.setWindowTitle("初始化")
+    dlg.setWindowFlags(Qt.Dialog | Qt.CustomizeWindowHint |
+                       Qt.WindowTitleHint)
+    dlg.setMinimumDuration(0)
+    dlg.setAutoClose(False)
+
+    ok_extract = True
+    try:
+        import io
+        with open(exe, "rb") as f:
+            f.seek(offset)
+            zf = zipfile.ZipFile(io.BytesIO(f.read(zsize)))
+            names = zf.namelist()
+            total_bytes = sum(i.file_size for i in zf.infolist())
+            done = 0
+            for i in zf.infolist():
+                if i.is_dir():
+                    continue
+                target = base / i.filename
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with zf.open(i) as src, open(target, "wb") as dst:
+                    while True:
+                        chunk = src.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        dst.write(chunk)
+                        done += len(chunk)
+                        dlg.setValue(int(done * 100 / max(total_bytes, 1)))
+                        QApplication.processEvents()
+        dlg.setValue(100)
+        dlg.hide()
+    except Exception as ex:
+        ok_extract = False
+        dlg.hide()
+        if owns_app:
+            pass
+        from PySide6.QtWidgets import QMessageBox
+        QMessageBox.warning(
+            None, "释放失败",
+            "浏览器内核释放失败：%s\n\n"
+            "程序仍将启动。请手动把 ms-playwright 文件夹放到 exe 旁，"
+            "或用 pip 安装 playwright。" % ex)
+
+    # 释放成功后补设环境变量（本次进程立即生效）
+    if ok_extract and any(p.name.startswith("chromium")
+                          for p in msp.iterdir() if p.is_dir()):
+        import os
+        import ikuai_service
+        os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(msp)
+    return ok_extract
+
+
 def main():
+    _ensure_portable_browsers()
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
     app.setStyleSheet(QSS)
