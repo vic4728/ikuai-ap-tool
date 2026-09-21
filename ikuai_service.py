@@ -50,21 +50,27 @@ OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 def _fix_playwright_browsers_path() -> None:
     """浏览器目录探测顺序（命中即设 PLAYWRIGHT_BROWSERS_PATH）：
 
-    1. 用户已设该环境变量 -> 尊重，不动
+    1. 用户已设有效值（非空、非 "0"）-> 尊重，不动
+       （"0" 是 playwright 的特殊值 = 包内 .local-browsers 布局，
+        会让 exe 找错地方，视为未设）
     2. exe/脚本同目录的 ms-playwright\\     <- 便携部署（拷整个目录即用）
     3. %LOCALAPPDATA%\\ms-playwright          <- 官方安装位置
-    4. 都没有 -> 不设（playwright 官方提示安装）
+    4. %USERPROFILE%\\AppData\\Local\\ms-playwright  <- LOCALAPPDATA 缺失时兜底
+    5. 都没有 -> 不设（playwright 官方提示安装）
     """
     import os
-    if os.environ.get("PLAYWRIGHT_BROWSERS_PATH"):
-        return
+    cur = os.environ.get("PLAYWRIGHT_BROWSERS_PATH")
+    if cur and cur != "0":
+        return                      # 用户设了有效值，尊重
+    base = Path(sys.executable if getattr(sys, "frozen", False)
+                else __file__).resolve().parent
+    candidates = [base / "ms-playwright"]
     lad = os.environ.get("LOCALAPPDATA")
-    candidates = [
-        Path(sys.executable if getattr(sys, "frozen", False)
-             else __file__).resolve().parent / "ms-playwright",
-    ]
     if lad:
         candidates.append(Path(lad) / "ms-playwright")
+    up = os.environ.get("USERPROFILE")
+    if up:
+        candidates.append(Path(up) / "AppData" / "Local" / "ms-playwright")
     for c in candidates:
         # 有效判定：目录存在且里面有 chromium 系目录（防空目录误命中）
         if c.is_dir():
@@ -73,6 +79,30 @@ def _fix_playwright_browsers_path() -> None:
             if has_chromium:
                 os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(c)
                 return
+
+
+def browser_missing_hint(err_text: str) -> str | None:
+    """连接报错里出现『浏览器可执行文件不存在』时，返回中文部署指引。
+
+    供 GUI 在连接失败弹窗里附上（比 playwright 官方英文提示友好）。
+    不是这类错误返回 None。
+    """
+    if ("Executable doesn't exist" not in (err_text or "")
+            and "executable doesn't exist" not in (err_text or "").lower()):
+        return None
+    base = Path(sys.executable if getattr(sys, "frozen", False)
+                else __file__).resolve().parent
+    return (
+        "未找到 Playwright 浏览器内核（首次使用需准备，二选一）：\n\n"
+        "方式 A（便携，无需装 Python）：\n"
+        "  在 exe 旁放 ms-playwright\\chromium_headless_shell-1243\\\n"
+        "  （从已可用机器拷贝该文件夹，约 271 MB）\n\n"
+        "方式 B（本机安装，需 Python）：\n"
+        "  pip install playwright\n"
+        "  playwright install chromium\n\n"
+        "当前搜索位置：\n  %s\n  %%LOCALAPPDATA%%\\ms-playwright"
+        % (base / "ms-playwright")
+    )
 
 
 _fix_playwright_browsers_path()

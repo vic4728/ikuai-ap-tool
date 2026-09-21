@@ -34,7 +34,9 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QFrame,
                                QMenu, QMessageBox, QPlainTextEdit, QPushButton,
                                QTableView, QVBoxLayout, QWidget)
 
-from ikuai_service import IKuaiService, APInfo, NotConnectedError, OUTPUT_DIR
+import ikuai_service
+from ikuai_service import (IKuaiService, APInfo, NotConnectedError,
+                           OUTPUT_DIR)
 import ikuai_config
 
 APP_TITLE = "爱快路由-AP终端工具"
@@ -982,7 +984,13 @@ class MainWindow(QMainWindow):
         self._set_busy(False)
         self._set_status("连接失败", C_ERR)
         self._append_log("[连接失败] %s" % msg)
-        QMessageBox.critical(self, "连接失败", msg)
+        # 浏览器内核缺失时附中文部署指引（比 playwright 英文提示友好）
+        hint = ikuai_service.browser_missing_hint(msg)
+        if hint:
+            self._append_log(hint)
+            QMessageBox.warning(self, "缺少浏览器内核", hint)
+        else:
+            QMessageBox.critical(self, "连接失败", msg)
 
     def on_disconnect(self):
         if self.busy:
