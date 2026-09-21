@@ -188,6 +188,27 @@ QPushButton#githubBtn {
 QPushButton#githubBtn:hover {
     background: #e8ecf1; color: #2563eb;
 }
+/* ---- 自定义标题栏（无边框窗口） ---- */
+QMainWindow { border-radius: 0; }
+QWidget#titleBar {
+    background: #ffffff; border: none;
+    border-bottom: 1px solid %(border)s;
+}
+QLabel#titleText {
+    color: #374151; font-weight: bold; font-size: 13px;
+    letter-spacing: 0.5px;
+}
+QWidget#content { background: %(bg)s; }
+QPushButton#winBtn {
+    background: transparent; border: none; border-radius: 5px;
+    color: #6b7280; font-size: 13px; font-weight: bold;
+}
+QPushButton#winBtn:hover { background: #e8ecf1; color: #1f2937; }
+QPushButton#winCloseBtn {
+    background: transparent; border: none; border-radius: 5px;
+    color: #6b7280; font-size: 13px; font-weight: bold;
+}
+QPushButton#winCloseBtn:hover { background: #dc2626; color: white; }
 """ % {"bg": C_BG, "card": C_CARD, "border": C_BORDER,
        "primary": C_PRIMARY, "primaryh": C_PRIMARY_H,
        "danger": C_DANGER, "dangerh": C_DANGER_H}
@@ -454,6 +475,120 @@ class APTableModel(QAbstractTableModel):
 
 
 # ======================================================================
+# 自定义标题栏（无边框窗口）：程序图标 + 标题 + GitHub 入口 + 窗口按钮
+# ======================================================================
+class TitleBar(QWidget):
+    """无边框窗口的自绘标题栏。
+
+    左：程序图标 + 标题文字
+    右：GitHub 猫标（github-ico.png / SVG 兜底）+ 发布页按钮 + 最小化 + 关闭
+
+    - 整条可拖动移动窗口；双击标题区最大化/还原
+    - 不做"最大化"按钮（运维工具通常固定尺寸用）；保留最小化和关闭
+    """
+
+    def __init__(self, parent: "MainWindow"):
+        super().__init__(parent)
+        self.setObjectName("titleBar")
+        self.setFixedHeight(38)
+        self._win = parent
+        self._press_pos = None
+
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(12, 4, 6, 4)
+        lay.setSpacing(6)
+
+        # 程序图标 + 标题
+        self.lbl_icon = QLabel()
+        ic = load_app_icon()
+        if not ic.isNull():
+            self.lbl_icon.setPixmap(ic.pixmap(20, 20))
+        self.lbl_title = QLabel(parent.windowTitle(), objectName="titleText")
+        lay.addWidget(self.lbl_icon)
+        lay.addWidget(self.lbl_title)
+        lay.addStretch(1)
+
+        # GitHub 猫标（优先 github-ico.png，其次 SVG 渲染）
+        self.btn_github = QPushButton()
+        self.btn_github.setObjectName("githubBtn")
+        self.btn_github.setToolTip("GitHub 项目主页\n点击打开发行版（exe）下载页")
+        self.btn_github.setCursor(Qt.PointingHandCursor)
+        self.btn_github.setFixedSize(34, 26)
+        gh_icon = _github_png_icon()
+        if gh_icon is not None and not gh_icon.isNull():
+            self.btn_github.setIcon(gh_icon)
+        else:
+            self.btn_github.setIcon(_github_icon())
+        self.btn_github.clicked.connect(parent._open_github)
+        lay.addWidget(self.btn_github)
+
+        self.btn_release = QPushButton("发布页 ▾")
+        self.btn_release.setObjectName("githubBtn")
+        self.btn_release.setToolTip("打开 GitHub Releases 下载页（exe）")
+        self.btn_release.setCursor(Qt.PointingHandCursor)
+        self.btn_release.setFixedHeight(26)
+        self.btn_release.clicked.connect(parent._open_github)
+        lay.addWidget(self.btn_release)
+
+        lay.addSpacing(8)
+
+        # 最小化 / 关闭
+        self.btn_min = QPushButton("—", objectName="winBtn")
+        self.btn_min.setFixedSize(38, 26)
+        self.btn_min.setToolTip("最小化")
+        self.btn_min.clicked.connect(parent.showMinimized)
+        lay.addWidget(self.btn_min)
+        self.btn_close = QPushButton("✕", objectName="winCloseBtn")
+        self.btn_close.setFixedSize(38, 26)
+        self.btn_close.setToolTip("关闭")
+        self.btn_close.clicked.connect(parent.close)
+        lay.addWidget(self.btn_close)
+
+    # ---- 拖动移动 / 双击最大化 ----
+    def mousePressEvent(self, ev):
+        if ev.button() == Qt.LeftButton:
+            self._press_pos = ev.globalPosition().toPoint() - self._win.pos()
+            ev.accept()
+
+    def mouseMoveEvent(self, ev):
+        if self._press_pos is not None:
+            if self._win.isMaximized():
+                self._win.showNormal()
+            self._win.move(ev.globalPosition().toPoint() - self._press_pos)
+            ev.accept()
+
+    def mouseReleaseEvent(self, ev):
+        self._press_pos = None
+        ev.accept()
+
+    def mouseDoubleClickEvent(self, ev):
+        # 双击标题区：最大化/还原
+        if self._win.isMaximized():
+            self._win.showNormal()
+        else:
+            self._win.showMaximized()
+        ev.accept()
+
+
+def _github_png_icon() -> QIcon | None:
+    """github-ico.png（用户提供的图标，优先用）；不存在返回 None。
+
+    查找顺序：exe/脚本同目录 -> PyInstaller _MEIPASS 内嵌。
+    """
+    cands = [_APP_DIR / "github-ico.png"]
+    if getattr(sys, "frozen", False):
+        mp = getattr(sys, "_MEIPASS", "")
+        if mp:
+            cands.append(Path(mp) / "github-ico.png")
+    for p in cands:
+        if p.is_file():
+            ic = QIcon(str(p))
+            if not ic.isNull():
+                return ic
+    return None
+
+
+# ======================================================================
 # 跨线程信号桥（worker 线程 emit -> 自动排队到 UI 线程）
 # ======================================================================
 class UiBridge(QObject):
@@ -479,6 +614,8 @@ class MainWindow(QMainWindow):
         self.resize(1133, 760)
         self.setMinimumSize(1000, 640)
         self.setWindowIcon(load_app_icon())
+        # 自定义标题栏：无边框 + 自绘标题条（GitHub 入口 + 窗口按钮）
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.Window)
 
         # ---- 状态 ----
         self.service = IKuaiService(log_cb=self._svc_log, headless=True)
@@ -513,8 +650,19 @@ class MainWindow(QMainWindow):
         root = QWidget(objectName="root")
         self.setCentralWidget(root)
         lay = QVBoxLayout(root)
-        lay.setContentsMargins(14, 12, 14, 12)
-        lay.setSpacing(10)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
+
+        # ---------- 自定义标题栏（无边框窗口的顶部标题条） ----------
+        self.title_bar = TitleBar(self)
+        lay.addWidget(self.title_bar)
+
+        # ---------- 内容区（保留原边距） ----------
+        content = QWidget(objectName="content")
+        lay.addWidget(content, 1)
+        clay = QVBoxLayout(content)
+        clay.setContentsMargins(14, 8, 14, 12)
+        clay.setSpacing(10)
 
         # ---------- 连接卡片（两行布局） ----------
         # 第一行：IP/域名 | 端口 | 协议（地址组）
@@ -586,7 +734,7 @@ class MainWindow(QMainWindow):
         self.btn_disconnect = QPushButton("断开")
         self.btn_disconnect.clicked.connect(self.on_disconnect)
         row2.addWidget(self.btn_disconnect)
-        lay.addWidget(gb)
+        clay.addWidget(gb)
 
         # ---------- AP 列表卡片 ----------
         gb2 = CardWidget("AP 终端列表")
@@ -644,7 +792,7 @@ class MainWindow(QMainWindow):
         self.view.horizontalScrollBar().setSizePolicy(
             self.view.horizontalScrollBar().sizePolicy())
         v2.addWidget(self.view)
-        lay.addWidget(gb2, 1)
+        clay.addWidget(gb2, 1)
 
         # ---------- 日志卡片 ----------
         gb3 = CardWidget("运行日志")
@@ -655,29 +803,15 @@ class MainWindow(QMainWindow):
         gb3.body_lay.addWidget(self.txt_log)
         gb3.setMinimumHeight(210)
         gb3.setMaximumHeight(230)
-        lay.addWidget(gb3)
+        clay.addWidget(gb3)
 
-        # ---------- 状态栏：左侧提示 + 右侧 GitHub 入口 ----------
+        # ---------- 状态栏：操作提示（GitHub 入口已移至顶部标题栏） ----------
         self.statusBar().showMessage(
             "双击「备注」可修改并回写路由器 · 双击行重启选中 · 点击表头排序")
 
-        # GitHub 猫标按钮（官方 octocat SVG 路径内嵌，无需图片文件）
-        self.btn_github = QPushButton()
-        self.btn_github.setObjectName("githubBtn")
-        self.btn_github.setToolTip(
-            "GitHub 项目主页\n点击打开发行版（exe）下载页")
-        self.btn_github.setCursor(Qt.PointingHandCursor)
-        self.btn_github.setFixedSize(34, 26)
-        self.btn_github.setIcon(_github_icon())
-        self.btn_github.clicked.connect(self._open_github)
-        self.btn_release = QPushButton("发布页 ▾")
-        self.btn_release.setObjectName("githubBtn")
-        self.btn_release.setToolTip("打开 GitHub Releases 下载页（exe）")
-        self.btn_release.setCursor(Qt.PointingHandCursor)
-        self.btn_release.setFixedHeight(26)
-        self.btn_release.clicked.connect(self._open_github)
-        self.statusBar().addPermanentWidget(self.btn_github)
-        self.statusBar().addPermanentWidget(self.btn_release)
+        # 右下角拖拽缩放手柄（无边框窗口不能靠系统边框缩放）
+        from PySide6.QtWidgets import QSizeGrip
+        self.statusBar().addPermanentWidget(QSizeGrip(self))
 
     def _open_github(self):
         """打开 GitHub 发行版下载页（本项目的 Releases）。"""
