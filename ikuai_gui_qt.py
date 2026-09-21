@@ -1530,6 +1530,20 @@ def _ensure_portable_browsers() -> bool:
         import os
         import ikuai_service
         os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(msp)
+
+    # 【关键】销毁临时 QApplication —— shiboken 全局单例约束：
+    # 不销毁的话 main() 里再建 QApplication 直接 RuntimeError 崩溃
+    # （真机踩坑：libshiboken: Please destroy the QApplication
+    #  singleton before creating a new QApplication instance）
+    dlg.deleteLater()
+    dlg = None
+    if owns_app:
+        app.quit()
+        app.deleteLater()
+        del app
+        import shiboken6
+        if shiboken6.isValid(QApplication.instance()):
+            shiboken6.delete(QApplication.instance())
     return ok_extract
 
 
