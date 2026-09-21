@@ -48,20 +48,31 @@ OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 # 修正：环境变量 PLAYWRIGHT_BROWSERS_PATH 是 playwright 官方的
 # 浏览器目录覆盖开关（优先级最高），启动前指到用户缓存目录即可。
 def _fix_playwright_browsers_path() -> None:
+    """浏览器目录探测顺序（命中即设 PLAYWRIGHT_BROWSERS_PATH）：
+
+    1. 用户已设该环境变量 -> 尊重，不动
+    2. exe/脚本同目录的 ms-playwright\\     <- 便携部署（拷整个目录即用）
+    3. %LOCALAPPDATA%\\ms-playwright          <- 官方安装位置
+    4. 都没有 -> 不设（playwright 官方提示安装）
+    """
     import os
     if os.environ.get("PLAYWRIGHT_BROWSERS_PATH"):
-        return                      # 用户自己设过，尊重
-    candidates = []
+        return
     lad = os.environ.get("LOCALAPPDATA")
+    candidates = [
+        Path(sys.executable if getattr(sys, "frozen", False)
+             else __file__).resolve().parent / "ms-playwright",
+    ]
     if lad:
         candidates.append(Path(lad) / "ms-playwright")
-    if not getattr(sys, "frozen", False):
-        # 脚本运行：exe 旁边的 browsers 兜底（很少用）
-        candidates.append(Path(__file__).resolve().parent / "browsers")
     for c in candidates:
+        # 有效判定：目录存在且里面有 chromium 系目录（防空目录误命中）
         if c.is_dir():
-            os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(c)
-            return
+            has_chromium = any(p.name.startswith("chromium")
+                               for p in c.iterdir() if p.is_dir())
+            if has_chromium:
+                os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(c)
+                return
 
 
 _fix_playwright_browsers_path()
@@ -153,7 +164,7 @@ SCHEMA_3X = {
         "name": ["备注", "分组名称"],
     },
     # 3.x 前端是 **Element UI**（不是 4.x 的 Ant Design），
-    # 确认弹窗结构完全不同（实测 iKuai 3.7.26）：
+    # 确认弹窗结构完全不同（实测 xh.jcsit.cn / 3.7.26）：
     #
     #   <div class="el-message-box__wrapper" style="z-index:2001">
     #     <div class="el-message-box">
@@ -179,7 +190,7 @@ SCHEMA_3X = {
     "restart_link_sels": ['a:has-text("重启")',
                           'a:text-is("重启")'],
     #
-    # 「修改备注」（3.x 实测 iKuai 3.7.26）：
+    # 「修改备注」（3.x 实测 xh.jcsit.cn / 3.7.26）：
     #   操作列有 <a>修改备注</a>；点开后的弹窗结构是"el 容器 + jqm 内容"混合体：
     #   容器  .el-dialog__wrapper (z=2001)
     #   输入  <input name="comment" class="inptText"
