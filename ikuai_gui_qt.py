@@ -43,7 +43,7 @@ import ikuai_projects
 import ikuai_config
 
 APP_TITLE = "爱快路由-AP终端工具"
-APP_VERSION = "1.1"
+APP_VERSION = "1.2"
 APP_COPYRIGHT = "| © Jcsit&viclai"
 
 # GitHub 项目入口（状态栏右侧按钮）
@@ -915,6 +915,7 @@ class MainWindow(QMainWindow):
         # ---- 多项目状态 ----
         self._closing = False
         self._pdata = ikuai_projects.load()          # {active, projects[]}
+        self._migrate_v1_config()                    # 1.0 连接配置 -> 项目
         self.sessions: dict[str, ProjectSession] = {}
         self.current: ProjectSession | None = None   # 当前选中的会话
         # 兼容层：旧代码用 self.service/self.bridge/... —— 全部代理到 current
@@ -933,6 +934,11 @@ class MainWindow(QMainWindow):
             act = next(iter(self.sessions))
         if act:
             self._select_session(act)
+            # 1.0 配置迁移提示（UI/日志已就绪）
+            if getattr(self, "_pending_v1_migrate_note", None):
+                self._append_log("已自动导入 1.0 版连接配置为项目「%s」"
+                                 % self._pending_v1_migrate_note)
+                self._pending_v1_migrate_note = None
             # 勾了自动登录且记住密码的项目 -> 自动连接（全部并行）
             for s in self.sessions.values():
                 if (s.proj.get("autologin") and s.proj.get("password")
@@ -1557,6 +1563,48 @@ class MainWindow(QMainWindow):
     # ==============================================================
     # 项目管理（新建/删除/切换/侧边栏）
     # ==============================================================
+    def _migrate_v1_config(self):
+        """1.0 版连接配置（ikuai_config.json）自动迁移为本版项目。
+
+        仅当 projects.json 还没有任何项目、且 1.0 配置文件真实存在时
+        迁移（load_config 的默认值里预填了演示地址 192.168.50.1，
+        不能当作"用户数据"——必须以文件存在为准）。
+        一次性：迁移后源文件改名 .migrated 防止重复导入。
+        """
+        try:
+            if self._pdata["projects"]:
+                return                      # 已有项目，无需迁移
+            if not ikuai_config.CONFIG_FILE.is_file():
+                return                      # 无 1.0 配置文件（全新用户）
+            old = ikuai_config.load_config()
+            host = (old.get("host") or "").strip()
+            if not host:
+                return                      # 1.0 无可用连接数据
+            remember = bool(old.get("remember"))
+            proj = ikuai_projects._default_project(host)
+            proj.update(
+                host=host,
+                port=old.get("https_port" if old.get("scheme") == "HTTPS"
+                             else "http_port") or 80,
+                scheme=old.get("scheme", "HTTP"),
+                user=old.get("user", "admin"),
+                # 密码：勾了记住密码才有（AES 机器绑定，本机可解）
+                password=(old.get("password") or "") if remember else "",
+                remember=remember,
+                autologin=bool(old.get("autologin")),
+                headless=bool(old.get("headless", True)),
+            )
+            self._pdata["projects"].append(proj)
+            self._pdata["active"] = proj["id"]
+            ikuai_projects.save(self._pdata)
+            # 源文件改名，防止删 projects.json 后重复迁移
+            src = ikuai_config.CONFIG_FILE
+            if src.is_file():
+                src.rename(src.with_suffix(".json.migrated"))
+            self._pending_v1_migrate_note = host   # UI 就绪后写日志
+        except Exception:
+            pass                                # 迁移失败不阻断启动
+
     def _add_session(self, proj: dict, select=True):
         s = ProjectSession(proj)
         self.sessions[s.pid] = s
@@ -1847,10 +1895,7 @@ class MainWindow(QMainWindow):
     # 连接 / 断开
     # ==============================================================
     def on_connect(self):
-        """连接按钮：同步表单到当前项目后走会话连接。"""
-        if not self.current:
-            QMessageBox.information(self, "提示", "请先新建或选择一个项目")
-            return
+        """连接按钮：无项目时按表单自动建「快速连接」项目；有项目则同步表单后连接。"""
         if self.busy:
             return
         host = self.edit_host.text().strip()
@@ -1862,6 +1907,26 @@ class MainWindow(QMainWindow):
         if not user or not password:
             QMessageBox.warning(self, "提示", "请填写登录用户和密码")
             return
+        if self.current is None:
+            # 【免建项目直连】连接区输入地址即可连 —— 以地址为名自动
+            # 创建项目（选不选项目都能连，也便于保存这次连接的配置）
+            try:
+                port = int(self.edit_port.text())
+            except ValueError:
+                QMessageBox.warning(self, "提示", "端口必须是数字")
+                return
+            remember = self.chk_remember.isChecked()
+            proj = ikuai_projects._default_project(host)
+            proj.update(host=host, port=port,
+                        scheme=self.cmb_scheme.currentText(),
+                        user=user,
+                        password=password if remember else "",
+                        remember=remember,
+                        autologin=self.chk_autologin.isChecked(),
+                        headless=self.chk_headless.isChecked())
+            self._pdata["projects"].append(proj)
+            self._add_session(proj, select=True)
+            self._append_log("已创建快速连接项目「%s」" % host)
         # 表单 -> 项目（密码也要带上）
         self._sync_form_to_current_proj()
         self.current.proj["password"] = password

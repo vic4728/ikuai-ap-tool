@@ -49,11 +49,15 @@ def app_dir() -> Path:
     """
     返回程序所在目录。
 
+    - 环境变量 IKUAI_DATA_DIR 优先（测试隔离/便携部署自定义数据目录）
     - 直接跑 .py        -> 脚本所在目录
     - PyInstaller 打包  -> exe 所在目录（不是解压的临时目录 _MEIPASS）
 
     这是「绿色单文件」的关键：配置永远生成在用户看得到、带着走的目录里。
     """
+    env = os.environ.get("IKUAI_DATA_DIR")
+    if env:
+        return Path(env)
     if getattr(sys, "frozen", False):
         # 打包后：sys.executable 是 exe 路径
         return Path(sys.executable).resolve().parent

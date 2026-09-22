@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import time
 import uuid
@@ -39,6 +40,11 @@ import ikuai_config
 
 
 def _base_dir() -> Path:
+    """数据目录：环境变量 IKUAI_DATA_DIR 优先（测试隔离/便携部署用），
+    其次 exe/脚本所在目录（与 ikuai_config.app_dir 同策略）。"""
+    env = os.environ.get("IKUAI_DATA_DIR")
+    if env:
+        return Path(env)
     return ikuai_config.app_dir()
 
 
