@@ -25,8 +25,9 @@ import threading
 import webbrowser
 from pathlib import Path
 
-from PySide6.QtCore import (QAbstractTableModel, QModelIndex, QPoint, QSize,
-                            Qt, QTimer, QUrl, Signal, QObject)
+from PySide6.QtCore import (QAbstractTableModel, QMetaObject, QModelIndex,
+                            QPoint, Q_ARG, QSize, Qt, QTimer, QUrl, Signal,
+                            QObject, Slot)
 from PySide6.QtGui import QColor, QFont, QIcon
 from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog,
                                QDialogButtonBox, QFrame,
@@ -1273,7 +1274,12 @@ class MainWindow(QMainWindow):
     # 新版本检查（自有下载站 versions.json，静默失败不打扰）
     # ==============================================================
     def _check_update(self):
-        """后台线程拉版本清单，比当前版本新 -> 信号回 UI 显示提示。"""
+        """后台线程拉版本清单，比当前版本新 -> 回 UI 线程显示提示。
+
+        【坑】QTimer.singleShot 从工作线程调用会静默不执行（timer
+        事件不会排队到主线程），必须用 QMetaObject.invokeMethod 的
+        QueuedConnection 把调用排回主线程。
+        """
         import urllib.request, ssl, json as _json
 
         def worker():
@@ -1288,11 +1294,19 @@ class MainWindow(QMainWindow):
                 # versions.json：按版本倒序，第一条即最新
                 latest = (data[0].get("version") or "").strip()
                 if latest and self._ver_newer(latest, APP_VERSION):
-                    QTimer.singleShot(0, lambda: self._on_update_found(latest))
+                    QMetaObject.invokeMethod(
+                        self, "_on_update_found_qt",
+                        Qt.QueuedConnection,
+                        Q_ARG(str, latest))
             except Exception:
                 pass          # 内网/断网/格式异常 -> 静默，不打扰用户
 
         threading.Thread(target=worker, daemon=True).start()
+
+    @Slot(str)
+    def _on_update_found_qt(self, version: str):
+        """供 QMetaObject.invokeMethod 跨线程调用（queued 到主线程）。"""
+        self._on_update_found(version)
 
     @staticmethod
     def _ver_newer(remote: str, local: str) -> bool:
