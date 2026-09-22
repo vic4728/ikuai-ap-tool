@@ -687,7 +687,17 @@ class IKuaiService:
             try:
                 self._page.goto(self._base_url + "/",
                                 wait_until="domcontentloaded", timeout=25000)
-                self._page.wait_for_timeout(5000)
+                # 【提速】原固定睡 5s；改为轮询登录页特征，就绪即走（最快 ~0.5s）
+                deadline = time.time() + 8
+                while time.time() < deadline:
+                    self._page.wait_for_timeout(400)
+                    try:
+                        if self._page.locator(
+                                "input[type=text], input[type=password], "
+                                "#usernameIpt").count() > 0:
+                            break
+                    except Exception:
+                        pass
             except PWTimeout:
                 raise RuntimeError("连接超时，请检查 IP、端口和网络连通性")
             except Exception as ex:
@@ -738,20 +748,22 @@ class IKuaiService:
             ok = False
             deadline = time.time() + 20
             while time.time() < deadline:
-                self._page.wait_for_timeout(500)
+                self._page.wait_for_timeout(300)
                 if not self._on_login_page():
                     ok = True
                     break
-            self._page.wait_for_timeout(1500)
+            # 【提速】原固定睡 1.5s；命中后短歇 500ms 让前端路由完成跳转
+            self._page.wait_for_timeout(500)
 
-            # 校验结果
-            try:
-                body = self._page.inner_text("body")[:3000]
-            except Exception:
-                body = ""
-            for bad in ("密码错误", "用户名或密码错误", "登录失败"):
-                if bad in body:
-                    raise RuntimeError("登录失败：账号或密码错误")
+            # 校验结果（错误文案只在登录页 DOM 里，ok 时跳过读取省时间）
+            if not ok:
+                try:
+                    body = self._page.inner_text("body")[:3000]
+                except Exception:
+                    body = ""
+                for bad in ("密码错误", "用户名或密码错误", "登录失败"):
+                    if bad in body:
+                        raise RuntimeError("登录失败：账号或密码错误")
 
             if not ok:
                 cur = ""
@@ -870,11 +882,14 @@ class IKuaiService:
                 pass
 
         # 4) 问后端要版本号
+        # 【提速】指纹/DOM/URL 已判定时跳过 sysstat 网络探测 ——
+        # 新 4.x 固件该接口失效（code:2007），白等一次网络往返。
         ver = ""
-        try:
-            ver = self._probe_firmware_version() or ""
-        except Exception:
-            pass
+        if chosen is None:
+            try:
+                ver = self._probe_firmware_version() or ""
+            except Exception:
+                pass
         if ver:
             self._firmware = ver
             if chosen is None:
@@ -953,7 +968,8 @@ class IKuaiService:
             sch = self._schema
             self._page.goto(self._base_url + sch["ap_url"],
                             wait_until="domcontentloaded", timeout=20000)
-            self._wait_ap_table(12000)
+            # 【提速】原 12s；4.x 首屏实际 ~8s 级，等不到也由 fetch 兜底
+            self._wait_ap_table(8000)
             self._ap_page_ready = True
         except Exception:
             self._ap_page_ready = False

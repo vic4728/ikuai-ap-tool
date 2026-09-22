@@ -25,27 +25,33 @@ import threading
 import webbrowser
 from pathlib import Path
 
-from PySide6.QtCore import (QAbstractTableModel, QModelIndex, Qt, QTimer,
-                            QUrl, Signal, QObject)
+from PySide6.QtCore import (QAbstractTableModel, QModelIndex, QPoint, QSize,
+                            Qt, QTimer, QUrl, Signal, QObject)
 from PySide6.QtGui import QColor, QFont, QIcon
-from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QFrame,
+from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog,
+                               QDialogButtonBox, QFrame,
                                QGroupBox, QHBoxLayout, QHeaderView,
-                               QInputDialog, QLabel, QLineEdit, QMainWindow,
+                               QInputDialog, QLabel, QLineEdit, QListWidget,
+                               QListWidgetItem, QMainWindow,
                                QMenu, QMessageBox, QPlainTextEdit, QPushButton,
-                               QTableView, QVBoxLayout, QWidget)
+                               QStyle, QTableView, QVBoxLayout, QWidget)
 
 import ikuai_service
 from ikuai_service import (IKuaiService, APInfo, NotConnectedError,
                            OUTPUT_DIR)
+import ikuai_projects
 import ikuai_config
 
 APP_TITLE = "爱快路由-AP终端工具"
-APP_VERSION = "1.0"
+APP_VERSION = "1.1"
 APP_COPYRIGHT = "| © Jcsit&viclai"
 
 # GitHub 项目入口（状态栏右侧按钮）
 GITHUB_REPO_URL = "https://github.com/vic4728/ikuai-ap-tool"
 GITHUB_RELEASES_URL = GITHUB_REPO_URL + "/releases"
+# 自有下载站（版本检查源，versions.json 由下载页同源提供）
+UPDATE_CHECK_URL = "https://svr.jcsit.cn/ikuai/versions.json"
+UPDATE_OPEN_URL = "https://svr.jcsit.cn/ikuai/"
 
 _APP_DIR = (Path(sys.executable).resolve().parent
             if getattr(sys, "frozen", False)
@@ -160,14 +166,14 @@ QPushButton#rowRestart:disabled { color: #93a9c8; background: #f1f4f8;
 QTableView {
     border: none; background: white; alternate-background-color: #fafbfd;
     gridline-color: #edf0f4; selection-background-color: #dbeafe;
-    selection-color: #111827;
+    selection-color: #111827; font-size: 12px;
 }
 QHeaderView::section {
     background: #f2f4f7; color: #4b5563; font-weight: bold;
     border: none; border-bottom: 1px solid %(border)s;
-    border-right: 1px solid #edf0f4; padding: 6px 8px;
+    border-right: 1px solid #edf0f4; padding: 5px 6px; font-size: 12px;
 }
-QTableView::item { padding: 4px 8px; }
+QTableView::item { padding: 3px 6px; }
 QPlainTextEdit {
     background: #0f172a; color: #d1d9e6; border: none; border-radius: 6px;
     font-family: 'Consolas', 'Microsoft YaHei UI', monospace; font-size: 12px;
@@ -190,6 +196,16 @@ QPushButton#githubBtn {
 QPushButton#githubBtn:hover {
     background: #e8ecf1; color: #2563eb;
 }
+/* ---- 新版本提示（标题栏紧凑胶囊，仅有新版时显示） ---- */
+QPushButton#updateLabel {
+    background: #eaf2ff; border: 1px solid #a8c8f8;
+    border-radius: 7px; padding: 0px 9px;
+    color: #1d4ed8; font-size: 12px; font-weight: bold;
+    min-height: 12px; max-height: 12px;
+}
+QPushButton#updateLabel:hover {
+    background: #d8e8ff; border-color: #2563eb;
+}
 /* ---- 自定义标题栏（无边框窗口） ---- */
 QMainWindow { border-radius: 0; }
 QWidget#titleBar {
@@ -200,7 +216,45 @@ QLabel#titleText {
     color: #374151; font-weight: bold; font-size: 13px;
     letter-spacing: 0.5px;
 }
+/* 标题栏信息胶囊：紧凑样式（总高 14px = 12 内容 + 2 边框，边框紧贴文字） */
+QLabel#titlePill {
+    background: #e8f0fe; border: 1px solid #b6d0f7;
+    border-radius: 7px; padding: 0px 7px;
+    color: #1e50c8; font-size: 11px; font-weight: bold;
+    min-height: 12px; max-height: 12px;
+}
+QLabel#titlePillMuted {
+    background: #f1f3f6; border: 1px solid #dde1e8;
+    border-radius: 7px; padding: 0px 7px;
+    color: #6b7280; font-size: 11px;
+    min-height: 12px; max-height: 12px;
+}
 QWidget#content { background: %(bg)s; }
+/* ---- 项目侧边栏（结构与 CardWidget 同构：cardHeader + cardBody） ---- */
+QWidget#sidebar {
+    background: %(card)s; border: 1px solid %(border)s;
+    border-radius: 10px;
+}
+QPushButton#sideNewBtn, QPushButton#sideDelBtn {
+    background: #eaf1fe; color: #1d4ed8; border: 1px solid #c3d8fb;
+    border-radius: 5px; font-weight: bold; font-size: 13px;
+    padding: 0px;
+}
+QPushButton#sideNewBtn:hover, QPushButton#sideDelBtn:hover {
+    background: #d8e7fd;
+}
+QListWidget#projList {
+    background: transparent; border: none; outline: none;
+    font-size: 12px;
+}
+QListWidget#projList::item {
+    background: #f6f8fb; border: 1px solid #e5eaf1; border-radius: 8px;
+    padding: 8px 10px; margin: 3px 6px;
+}
+QListWidget#projList::item:hover { background: #eef3fa; }
+QListWidget#projList::item:selected {
+    background: #dbeafe; border-color: #93c5fd;
+}
 QPushButton#winBtn {
     background: transparent; border: none; border-radius: 5px;
     color: #6b7280; font-size: 13px; font-weight: bold;
@@ -407,13 +461,19 @@ class APTableModel(QAbstractTableModel):
         return list(self._aps)
 
     def set_aps(self, aps: list[APInfo], monitor: dict):
-        """整表替换（带排序保持）。数据量 <=500，整表刷新足够快。"""
+        """整表替换（带排序保持）。数据量 <=500，整表刷新足够快。
+
+        注意：排序发生在 self._aps 上，调用方（会话）的 ap_list 也必须
+        同步为排序后的顺序 —— 否则操作按钮按 ap_list[row] 放置时会
+        【错位到别的设备】（行号是排序后的、对象是排序前的）。
+        """
         self.beginResetModel()
         self._aps = list(aps)
         self._monitor = monitor
         if self.sort_col is not None:
             self._apply_sort()
         self.endResetModel()
+        self.sync_back()
 
     # ---------- 排序 ----------
     @staticmethod
@@ -437,6 +497,17 @@ class APTableModel(QAbstractTableModel):
                           "小时": 3600, "分": 60, "分钟": 60, "秒": 1}[unit]
         return total if matched else -1
 
+    @staticmethod
+    def _nat_key(v: str):
+        """自然排序：数字段按数值比较（a1 < a5 < a10，而非字典序 a1<a10<a5）。
+
+        AP 名称普遍带数字后缀（IK-SW5_a1..a12），字典序会排成
+        a1,a10,a11,a12,a2... 对运维选型非常反直觉。
+        """
+        parts = re.split(r"(\d+)", (v or "").lower())
+        return tuple((1, int(p)) if p.isdigit() else (0, p)
+                     for p in parts if p != "")
+
     def sort(self, column: int, order=Qt.DescendingOrder):
         """点击表头（QTableView 排序入口）。首点降序由调用方控制 order。"""
         if not 0 <= column < len(self.COL_KEYS) - 1:   # 操作列不可排序
@@ -446,6 +517,21 @@ class APTableModel(QAbstractTableModel):
         self.beginResetModel()
         self._apply_sort()
         self.endResetModel()
+        self.sync_back()
+
+    def sync_back(self):
+        """把（可能已排序的）行序写回数据源持有者。
+
+        MainWindow._render_aps 里 self.ap_list 是会话 ap_list 的代理
+        （setter 转发 current），排序后必须同步，否则操作按钮/
+        双击取行/选中恢复全部按旧行序取对象 —— 重启错设备的隐患。
+        """
+        try:
+            win = self.parent()
+            if win is not None and getattr(win, "ap_list", None) is not None:
+                win.ap_list = list(self._aps)
+        except RuntimeError:      # 窗口已销毁（关闭中）
+            pass
 
     def _apply_sort(self):
         col = self.sort_col
@@ -460,7 +546,7 @@ class APTableModel(QAbstractTableModel):
                 return self._ip_key(v)
             if col_key == "uptime":
                 return self._uptime_key(v)
-            return v.lower()
+            return self._nat_key(v)      # 文本列自然序（a1<a5<a10）
 
         non_empty = [a for a in self._aps
                      if not self._empty((getattr(a, key, "") or "").strip())]
@@ -500,14 +586,19 @@ class TitleBar(QWidget):
         lay.setContentsMargins(12, 4, 6, 4)
         lay.setSpacing(6)
 
-        # 程序图标 + 标题
+        # 程序图标 + 标题（主名 + 版本胶囊 + 版权胶囊）
         self.lbl_icon = QLabel()
         ic = load_app_icon()
         if not ic.isNull():
             self.lbl_icon.setPixmap(ic.pixmap(20, 20))
-        self.lbl_title = QLabel(parent.windowTitle(), objectName="titleText")
+        self.lbl_title = QLabel(APP_TITLE, objectName="titleText")
+        self.lbl_ver = QLabel("v%s" % APP_VERSION, objectName="titlePill")
+        self.lbl_cr = QLabel(APP_COPYRIGHT.strip("| "),
+                             objectName="titlePillMuted")
         lay.addWidget(self.lbl_icon)
         lay.addWidget(self.lbl_title)
+        lay.addWidget(self.lbl_ver)
+        lay.addWidget(self.lbl_cr)
         lay.addStretch(1)
 
         # GitHub 猫标（优先 github-ico.png，其次 SVG 渲染）
@@ -524,13 +615,15 @@ class TitleBar(QWidget):
         self.btn_github.clicked.connect(parent._open_github)
         lay.addWidget(self.btn_github)
 
-        self.btn_release = QPushButton("发布页 ▾")
-        self.btn_release.setObjectName("githubBtn")
-        self.btn_release.setToolTip("打开 GitHub Releases 下载页（exe）")
-        self.btn_release.setCursor(Qt.PointingHandCursor)
-        self.btn_release.setFixedHeight(26)
-        self.btn_release.clicked.connect(parent._open_github)
-        lay.addWidget(self.btn_release)
+        # 新版本提示（默认隐藏；检查到新版本时显示蓝色文字，点击打开下载页）
+        self.lbl_update = QPushButton(objectName="updateLabel")
+        self.lbl_update.setToolTip("发现新版本，点击打开下载页")
+        self.lbl_update.setCursor(Qt.PointingHandCursor)
+        self.lbl_update.hide()
+        # 紧凑胶囊：QSS min/max-height 控内容高（+2px 边框 = 总高 14px）
+        self.lbl_update.clicked.connect(
+            lambda: webbrowser.open(UPDATE_OPEN_URL))
+        lay.addWidget(self.lbl_update)
 
         lay.addSpacing(8)
 
@@ -607,43 +700,328 @@ class UiBridge(QObject):
 
 
 # ======================================================================
+# 项目会话（每项目一套：service + bridge + 状态 + 定时器 + 日志）
+# ======================================================================
+class ProjectSession:
+    """一个项目 = 一条独立的路由器连接上下文。
+
+    - service：独立 IKuaiService（独立 Playwright/浏览器实例，可多开并行）
+    - bridge：独立信号桥（信号带 project_id 路由回 UI）
+    - 状态：ap_list / monitor / busy / inflight 等（原 MainWindow 上的那套）
+    - 日志：logs/<项目名>.log 独立文件（ikuai_projects.get_logger）
+    """
+
+    def __init__(self, proj: dict):
+        self.proj = proj                      # 项目配置 dict（含 id/name/...）
+        self.pid = proj["id"]
+        self.name = proj.get("name", "")
+        self.service = IKuaiService(
+            log_cb=self._svc_log, headless=proj.get("headless", True))
+        self.bridge = UiBridge()
+        self.ap_list: list[APInfo] = []
+        self.busy = False
+        self.auto_refresh = False
+        self.refresh_inflight = False
+        self.monitor_targets: dict[str, dict] = {}
+        self.just_recovered = False
+        self.last_aps_count = -1          # 首轮必记「检测到 N 台」
+        self.timer_refresh: QTimer | None = None
+        self.timer_monitor: QTimer | None = None
+        self.selected_backup: list = []
+
+    # ---- 状态文案（连接状态给侧边栏显示） ----
+    def state_text(self) -> str:
+        if self.busy and not self.service.connected:
+            return "连接中"
+        if self.service.connected:
+            n = len(self.ap_list)
+            if self.monitor_targets:
+                pending = sum(1 for v in self.monitor_targets.values()
+                              if v.get("state") in ("waiting", "seen_offline"))
+                if pending:
+                    return "重启中"
+                return "已恢复"
+            if self.just_recovered:
+                return "已恢复"
+            return "已连接" + ("·%d台" % n if n else "")
+        return "未连接"
+
+    def _svc_log(self, line: str) -> None:
+        """service 工作线程日志 -> 项目日志文件（直接写，线程安全）。"""
+        try:
+            ikuai_projects.get_logger(self.name).info(
+                line.strip()[:500])
+        except Exception:
+            pass
+
+
+# ======================================================================
+# 项目新建/编辑弹窗（用户指定布局）
+# ======================================================================
+class ProjectDialog(QDialog):
+    """新建/编辑项目。
+
+    布局（用户指定）：
+      项目名称
+      IP/域名 | 端口 | 协议
+      用户 | 密码
+      记住密码 | 自动登录 | 隐藏浏览窗口
+      取消 | 保存
+    """
+
+    def __init__(self, parent=None, title="新建项目", proj: dict | None = None):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.setModal(True)
+        self.setMinimumWidth(420)
+        self.proj_data: dict | None = None
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(18, 16, 18, 14)
+        lay.setSpacing(10)
+
+        # 项目名称
+        row0 = QHBoxLayout()
+        row0.addWidget(QLabel("项目名称"))
+        self.ed_name = QLineEdit()
+        self.ed_name.setPlaceholderText("例如：花舍车间 / 办公室")
+        row0.addWidget(self.ed_name, 1)
+        lay.addLayout(row0)
+
+        # IP/域名 | 端口 | 协议
+        row1 = QHBoxLayout()
+        row1.addWidget(QLabel("IP/域名"))
+        self.ed_host = QLineEdit()
+        self.ed_host.setPlaceholderText("IPv4 / IPv6 / 域名")
+        self.ed_host.setMinimumWidth(160)
+        row1.addWidget(self.ed_host, 1)
+        row1.addWidget(QLabel("端口"))
+        self.ed_port = QLineEdit()
+        self.ed_port.setFixedWidth(56)
+        self.ed_port.setText("80")
+        row1.addWidget(self.ed_port)
+        self.cmb_scheme = QComboBox()
+        self.cmb_scheme.addItems(["HTTP", "HTTPS"])
+        self.cmb_scheme.setFixedWidth(78)
+        self.cmb_scheme.currentTextChanged.connect(self._scheme_change)
+        row1.addWidget(self.cmb_scheme)
+        lay.addLayout(row1)
+
+        # 用户 | 密码
+        row2 = QHBoxLayout()
+        row2.addWidget(QLabel("用户"))
+        self.ed_user = QLineEdit()
+        self.ed_user.setFixedWidth(120)
+        self.ed_user.setText("admin")
+        row2.addWidget(self.ed_user)
+        row2.addWidget(QLabel("密码"))
+        self.ed_pwd = QLineEdit()
+        self.ed_pwd.setEchoMode(QLineEdit.Password)
+        row2.addWidget(self.ed_pwd, 1)
+        self.chk_show = QCheckBox("显示")
+        self.chk_show.toggled.connect(
+            lambda on: self.ed_pwd.setEchoMode(
+                QLineEdit.Normal if on else QLineEdit.Password))
+        row2.addWidget(self.chk_show)
+        lay.addLayout(row2)
+
+        # 记住密码 | 自动登录 | 隐藏浏览窗口
+        row3 = QHBoxLayout()
+        self.chk_remember = QCheckBox("记住密码")
+        self.chk_remember.setChecked(True)
+        row3.addWidget(self.chk_remember)
+        self.chk_auto = QCheckBox("自动登录")
+        row3.addWidget(self.chk_auto)
+        self.chk_headless = QCheckBox("隐藏浏览窗口")
+        self.chk_headless.setChecked(True)
+        row3.addWidget(self.chk_headless)
+        row3.addStretch(1)
+        lay.addLayout(row3)
+
+        # 取消 | 保存
+        btns = QDialogButtonBox()
+        btn_cancel = btns.addButton("取消", QDialogButtonBox.RejectRole)
+        btn_save = btns.addButton("保存", QDialogButtonBox.AcceptRole)
+        btn_save.setObjectName("primary")
+        btns.accepted.connect(self._on_save)
+        btns.rejected.connect(self.reject)
+        lay.addWidget(btns)
+
+        # 编辑模式回填
+        if proj:
+            self.ed_name.setText(proj.get("name", ""))
+            self.ed_host.setText(proj.get("host", ""))
+            self.ed_port.setText(str(proj.get("port", 80)))
+            self.cmb_scheme.setCurrentText(proj.get("scheme", "HTTP"))
+            self.ed_user.setText(proj.get("user", "admin"))
+            if proj.get("remember"):
+                self.ed_pwd.setText(proj.get("password", ""))
+            self.chk_remember.setChecked(bool(proj.get("remember")))
+            self.chk_auto.setChecked(bool(proj.get("autologin")))
+            self.chk_headless.setChecked(bool(proj.get("headless", True)))
+
+    def _scheme_change(self, txt):
+        if txt == "HTTPS" and self.ed_port.text() == "80":
+            self.ed_port.setText("443")
+        elif txt == "HTTP" and self.ed_port.text() == "443":
+            self.ed_port.setText("80")
+
+    def _on_save(self):
+        name = self.ed_name.text().strip()
+        host = self.ed_host.text().strip()
+        user = self.ed_user.text().strip()
+        pwd = self.ed_pwd.text()
+        if not name:
+            QMessageBox.warning(self, "提示", "请填写项目名称")
+            return
+        if not host:
+            QMessageBox.warning(self, "提示", "请填写 IP/域名")
+            return
+        if not user or not pwd:
+            QMessageBox.warning(self, "提示", "请填写用户和密码")
+            return
+        try:
+            port = int(self.ed_port.text())
+        except ValueError:
+            QMessageBox.warning(self, "提示", "端口必须是数字")
+            return
+        self.proj_data = {
+            "name": name,
+            "host": host,
+            "port": port,
+            "scheme": self.cmb_scheme.currentText(),
+            "user": user,
+            "password": pwd,
+            "remember": self.chk_remember.isChecked(),
+            "autologin": self.chk_auto.isChecked(),
+            "headless": self.chk_headless.isChecked(),
+        }
+        self.accept()
+
+
+# ======================================================================
 # 主窗口
 # ======================================================================
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("%s v%s %s" % (APP_TITLE, APP_VERSION, APP_COPYRIGHT))
-        self.resize(1133, 760)
-        self.setMinimumSize(1000, 640)
+        self.resize(1220, 800)
+        self.setMinimumSize(1080, 660)
         self.setWindowIcon(load_app_icon())
         # 自定义标题栏：无边框 + 自绘标题条（GitHub 入口 + 窗口按钮）
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.Window)
 
-        # ---- 状态 ----
-        self.service = IKuaiService(log_cb=self._svc_log, headless=True)
-        self.bridge = UiBridge()
-        self.ap_list: list[APInfo] = []
-        self.busy = False
-        self.auto_refresh = False
-        self._refresh_inflight = False
-        self.monitor_targets: dict[str, dict] = {}
-        self._just_recovered = False
+        # ---- 多项目状态 ----
         self._closing = False
+        self._pdata = ikuai_projects.load()          # {active, projects[]}
+        self.sessions: dict[str, ProjectSession] = {}
+        self.current: ProjectSession | None = None   # 当前选中的会话
+        # 兼容层：旧代码用 self.service/self.bridge/... —— 全部代理到 current
+        # （property 定义见类尾部）
 
         self._build_ui()
-        self._connect_signals()
-        self._load_config()
+        self._connect_all_session_signals()
+        self._load_config_into_ui()
 
-        # 定时器（对应 Tk 版的 after 循环）
-        self.timer_refresh = QTimer(self)
-        self.timer_refresh.setSingleShot(True)
-        self.timer_refresh.timeout.connect(self._auto_refresh_tick)
-        self.timer_monitor = QTimer(self)
-        self.timer_monitor.setSingleShot(True)
-        self.timer_monitor.timeout.connect(self._monitor_tick)
+        # 恢复项目：为每个项目建会话 + 侧边栏项
+        for proj in self._pdata["projects"]:
+            self._add_session(proj, select=False)
+        # 选中上次活跃的（或第一个）
+        act = self._pdata.get("active", "")
+        if act not in self.sessions and self.sessions:
+            act = next(iter(self.sessions))
+        if act:
+            self._select_session(act)
+            # 勾了自动登录且记住密码的项目 -> 自动连接（全部并行）
+            for s in self.sessions.values():
+                if (s.proj.get("autologin") and s.proj.get("password")
+                        and s.proj.get("remember")):
+                    QTimer.singleShot(600, lambda ss=s: self._connect_session(ss))
 
-        if self.chk_autologin.isChecked() and self.edit_password.text():
-            QTimer.singleShot(500, self.on_connect)
+        # 启动 2 秒后检查新版本（后台静默，失败无感知）
+        QTimer.singleShot(2000, self._check_update)
+
+    # ---------- 属性代理：旧代码无缝访问当前会话 ----------
+    @property
+    def service(self):
+        return self.current.service if self.current else None
+
+    @property
+    def bridge(self):
+        return self.current.bridge if self.current else None
+
+    @property
+    def ap_list(self):
+        return self.current.ap_list if self.current else []
+
+    @ap_list.setter
+    def ap_list(self, v):
+        if self.current:
+            self.current.ap_list = v
+
+    @property
+    def busy(self):
+        return self.current.busy if self.current else False
+
+    @busy.setter
+    def busy(self, v):
+        if self.current:
+            self.current.busy = v
+
+    @property
+    def auto_refresh(self):
+        return self.current.auto_refresh if self.current else False
+
+    @auto_refresh.setter
+    def auto_refresh(self, v):
+        if self.current:
+            self.current.auto_refresh = v
+
+    @property
+    def _refresh_inflight(self):
+        return self.current.refresh_inflight if self.current else False
+
+    @_refresh_inflight.setter
+    def _refresh_inflight(self, v):
+        if self.current:
+            self.current.refresh_inflight = v
+
+    @property
+    def monitor_targets(self):
+        return self.current.monitor_targets if self.current else {}
+
+    @monitor_targets.setter
+    def monitor_targets(self, v):
+        if self.current:
+            self.current.monitor_targets = v
+
+    @property
+    def _just_recovered(self):
+        return self.current.just_recovered if self.current else False
+
+    @_just_recovered.setter
+    def _just_recovered(self, v):
+        if self.current:
+            self.current.just_recovered = v
+
+    @property
+    def timer_refresh(self):
+        return self.current.timer_refresh if self.current else None
+
+    @timer_refresh.setter
+    def timer_refresh(self, v):
+        if self.current:
+            self.current.timer_refresh = v
+
+    @property
+    def timer_monitor(self):
+        return self.current.timer_monitor if self.current else None
+
+    @timer_monitor.setter
+    def timer_monitor(self, v):
+        if self.current:
+            self.current.timer_monitor = v
 
     # ==============================================================
     # 界面
@@ -659,11 +1037,69 @@ class MainWindow(QMainWindow):
         self.title_bar = TitleBar(self)
         lay.addWidget(self.title_bar)
 
-        # ---------- 内容区（保留原边距） ----------
+        # ---------- 内容区：左侧项目边栏 + 右侧工作区 ----------
         content = QWidget(objectName="content")
         lay.addWidget(content, 1)
-        clay = QVBoxLayout(content)
-        clay.setContentsMargins(14, 8, 14, 12)
+        body = QHBoxLayout(content)
+        body.setContentsMargins(14, 8, 14, 12)
+        body.setSpacing(10)
+
+        # ---- 左：项目侧边栏 ----
+        # 结构与右侧 CardWidget 完全同构：cardHeader 标题条（含强调蓝条
+        # + 功能按钮）+ cardBody 列表区 —— 样式/圆角/对齐与内容区一致
+        side = QWidget(objectName="sidebar")
+        side.setFixedWidth(200)
+        slay = QVBoxLayout(side)
+        # 顶边 3px：与右侧卡片（border1+clay1+cardmargin1）标题条基线对齐
+        slay.setContentsMargins(1, 3, 1, 1)
+        slay.setSpacing(0)
+
+        head = QFrame(objectName="cardHeader")
+        hlay = QHBoxLayout(head)
+        # (12,4,8,4)：按钮 20px + 8 = 28px，与卡片 header（标题+12）同高
+        hlay.setContentsMargins(12, 4, 8, 4)
+        hlay.setSpacing(8)
+        accent = QFrame(objectName="cardAccent")
+        accent.setFixedSize(4, 16)
+        hlay.addWidget(accent)
+        hlay.addWidget(QLabel("项 目", objectName="cardTitle"))
+        hlay.addStretch(1)
+        btn_new = QPushButton(objectName="sideNewBtn")
+        btn_new.setFixedSize(24, 20)
+        btn_new.setToolTip("新建项目")
+        btn_new.setIcon(self.style().standardIcon(
+            QStyle.StandardPixmap.SP_FileDialogNewFolder))
+        btn_new.clicked.connect(self.on_new_project)
+        hlay.addWidget(btn_new)
+        btn_del = QPushButton(objectName="sideDelBtn")
+        btn_del.setFixedSize(24, 20)
+        btn_del.setToolTip("删除选中项目")
+        btn_del.setIcon(self.style().standardIcon(
+            QStyle.StandardPixmap.SP_TrashIcon))
+        btn_del.clicked.connect(self.on_delete_project)
+        hlay.addWidget(btn_del)
+        slay.addWidget(head)
+
+        list_wrap = QWidget(objectName="cardBody")
+        lw_lay = QVBoxLayout(list_wrap)
+        lw_lay.setContentsMargins(4, 6, 4, 6)
+        lw_lay.setSpacing(0)
+
+        self.proj_list = QListWidget(objectName="projList")
+        self.proj_list.setIconSize(QSize(1, 1))     # 纯文字项
+        self.proj_list.itemClicked.connect(self._on_proj_item_clicked)
+        self.proj_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.proj_list.customContextMenuRequested.connect(
+            self._on_proj_context_menu)
+        lw_lay.addWidget(self.proj_list)
+        slay.addWidget(list_wrap, 1)
+        body.addWidget(side)
+
+        # ---- 右：工作区（原有三卡片） ----
+        work = QWidget()
+        body.addWidget(work, 1)
+        clay = QVBoxLayout(work)
+        clay.setContentsMargins(0, 1, 0, 0)   # 与侧栏 cardHeader 顶部基线对齐
         clay.setSpacing(10)
 
         # ---------- 连接卡片（两行布局） ----------
@@ -788,7 +1224,11 @@ class MainWindow(QMainWindow):
         hh.setSectionsClickable(True)
         hh.sectionClicked.connect(self._on_header_clicked)
         hh.setStretchLastSection(False)
-        widths = [90, 150, 100, 120, 150, 110, 90, 150, 96]
+        hh.setSortIndicatorShown(True)          # 排序箭头（用户可见反馈）
+        hh.setSortIndicator(-1, Qt.DescendingOrder)
+        hh.setSectionsMovable(False)            # 列顺序固定，避免与排序状态错乱
+        # 列宽：合计 ~950px，视口 960 目标内全 9 列可见
+        widths = [78, 142, 100, 112, 140, 100, 80, 130, 68]
         for i, w in enumerate(widths):
             self.view.setColumnWidth(i, w)
         self.view.horizontalScrollBar().setSizePolicy(
@@ -810,10 +1250,9 @@ class MainWindow(QMainWindow):
         # ---------- 状态栏：操作提示（GitHub 入口已移至顶部标题栏） ----------
         self.statusBar().showMessage(
             "双击「备注」可修改并回写路由器 · 双击行重启选中 · 点击表头排序")
-
-        # 右下角拖拽缩放手柄（无边框窗口不能靠系统边框缩放）
-        from PySide6.QtWidgets import QSizeGrip
-        self.statusBar().addPermanentWidget(QSizeGrip(self))
+        # 缩放说明：无边框窗口的边缘缩放由 nativeEvent 的 WM_NCHITTEST
+        # 提供（所有边缘+四角可拖），状态栏不再放 grip（曾有双 grip 问题）。
+        self.statusBar().setSizeGripEnabled(False)
 
     def _open_github(self):
         """打开 GitHub 发行版下载页（本项目的 Releases）。"""
@@ -825,20 +1264,497 @@ class MainWindow(QMainWindow):
             self._append_log("打开失败：%s（手动访问 %s）" % (ex, url))
 
     # ==============================================================
-    # 信号
+    # 新版本检查（自有下载站 versions.json，静默失败不打扰）
     # ==============================================================
-    def _connect_signals(self):
-        b = self.bridge
-        b.sig_log.connect(self._append_log)
-        b.sig_aps.connect(self._render_aps)
-        b.sig_refresh_done.connect(self._on_refresh_done)
-        b.sig_connected.connect(self._on_connected_ok)
-        b.sig_disconnected.connect(self._on_disconnected)
-        b.sig_connect_failed.connect(self._on_connect_failed)
-        b.sig_busy.connect(self._set_busy)
-        b.sig_status.connect(self._set_status)
-        b.sig_batch_done.connect(self._on_batch_done)
-        b.sig_comment_done.connect(self._on_comment_done)
+    def _check_update(self):
+        """后台线程拉版本清单，比当前版本新 -> 信号回 UI 显示提示。"""
+        import urllib.request, ssl, json as _json
+
+        def worker():
+            try:
+                ctx = ssl.create_default_context()
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+                req = urllib.request.Request(UPDATE_CHECK_URL,
+                                             headers={"User-Agent": "ikuai-ap-tool"})
+                with urllib.request.urlopen(req, timeout=8, context=ctx) as r:
+                    data = _json.loads(r.read().decode("utf-8"))
+                # versions.json：按版本倒序，第一条即最新
+                latest = (data[0].get("version") or "").strip()
+                if latest and self._ver_newer(latest, APP_VERSION):
+                    QTimer.singleShot(0, lambda: self._on_update_found(latest))
+            except Exception:
+                pass          # 内网/断网/格式异常 -> 静默，不打扰用户
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    @staticmethod
+    def _ver_newer(remote: str, local: str) -> bool:
+        """语义化版本比较：remote > local 才提示（1.10 > 1.9）。"""
+        def key(v):
+            import re
+            nums = re.findall(r"\d+", v)
+            return tuple(int(n) for n in nums[:3])
+        try:
+            return key(remote) > key(local)
+        except Exception:
+            return False
+
+    def _on_update_found(self, version: str):
+        """UI 线程：标题栏显示蓝色「新版本vxx，请更新」。"""
+        if self._closing:
+            return
+        lbl = self.title_bar.lbl_update
+        lbl.setText("新版本v%s，请更新" % version)
+        lbl.show()
+        self._append_log("发现新版本 v%s（点击标题栏提示可打开下载页 %s）"
+                         % (version, UPDATE_OPEN_URL))
+
+    # ==============================================================
+    # 信号（多会话：每会话的 bridge 都接同一组槽，槽内按 pid 路由）
+    # ==============================================================
+    def _connect_all_session_signals(self):
+        """已有会话 + 未来新建会话统一接线。"""
+        for s in self.sessions.values():
+            self._wire_session(s)
+
+    def _wire_session(self, s: "ProjectSession"):
+        b = s.bridge
+        # 避免重复接线（receivers 用信号签名字符串；已接线则跳过）
+        try:
+            if b.receivers("2sig_log(QString)"):
+                return
+        except TypeError:
+            pass
+        b.sig_log.connect(lambda m, ss=s: self._route_log(ss, m))
+        b.sig_aps.connect(lambda l, ss=s: self._route_aps(ss, l))
+        b.sig_refresh_done.connect(lambda _=None, ss=s: self._route_refresh_done(ss))
+        b.sig_connected.connect(lambda ss=s: self._route_connected(ss))
+        b.sig_disconnected.connect(lambda ss=s: self._route_disconnected(ss))
+        b.sig_connect_failed.connect(lambda m, ss=s: self._route_failed(ss, m))
+        b.sig_busy.connect(lambda v, ss=s: self._route_busy(ss, v))
+        b.sig_batch_done.connect(lambda ok, tot, tg, ss=s: self._route_batch(ss, ok, tot, tg))
+        b.sig_comment_done.connect(lambda k, ok, v, ss=s: self._route_comment(ss, k, ok, v))
+        # 每会话独立定时器（parent=self，回调按 pid 分发）
+        s.timer_refresh = QTimer(self)
+        s.timer_refresh.setSingleShot(True)
+        s.timer_refresh.timeout.connect(lambda ss=s: self._session_refresh_tick(ss))
+        s.timer_monitor = QTimer(self)
+        s.timer_monitor.setSingleShot(True)
+        s.timer_monitor.timeout.connect(lambda ss=s: self._session_monitor_tick(ss))
+
+    # ---- 路由槽：只处理"当前显示会话"的 UI 更新，其余只动侧边栏状态 ----
+    def _route_log(self, s, msg):
+        if self.current is s:
+            self._append_log(msg)
+        self._update_proj_item(s)
+
+    def _route_aps(self, s, aps):
+        s.ap_list = list(aps)
+        self._check_monitor_session(s, aps)
+        # 数量变化才记日志（首轮必记；自动刷新同数不刷屏）
+        n = len(aps)
+        if n != s.last_aps_count:
+            if self.current is s:
+                self._append_log("检测到 %d 台 AP 终端" % n)
+            else:
+                self._append_log("[%s] 检测到 %d 台 AP 终端" % (s.name, n))
+            s.last_aps_count = n
+        if self.current is s:
+            self._render_aps(aps)
+            self._set_status(self._status_text(), C_OK)
+        self._update_proj_item(s)
+
+    def _route_refresh_done(self, s):
+        s.refresh_inflight = False
+        if self.current is s:
+            self._set_status(self._status_text(), C_OK)
+            s.just_recovered = False
+
+    def _route_connected(self, s):
+        s.busy = False
+        # 无论是否在前台，都拉一轮列表（后台项目也要有数据）
+        self._refresh_session(s, quiet=True)
+        if self.current is s:
+            # 【修复】成功路径也要复位工具栏 —— 原来只复位 s.busy 漏了
+            # _set_busy(False)，导致连完第一个项目后「连接/刷新/断开」
+            # 永久灰死，第二个项目点连接无响应（右键菜单绕过按钮所以能用）
+            self._set_busy(False)
+            self._append_log("登录成功，已进入后台")
+            s.auto_refresh = self.chk_autorefresh.isChecked()
+            if s.auto_refresh:
+                self._schedule_refresh()
+        self._update_proj_item(s)
+
+    def _route_disconnected(self, s):
+        s.busy = False
+        s.ap_list = []
+        if self.current is s:
+            self._set_busy(False)
+            self._set_status("未连接", C_ERR)
+            self._render_aps([])
+            self._append_log("已断开连接")
+        self._update_proj_item(s)
+
+    def _route_failed(self, s, msg):
+        s.busy = False
+        if self.current is s:
+            self._set_busy(False)
+            self._set_status("连接失败", C_ERR)
+            self._append_log("[连接失败] %s" % msg)
+            hint = ikuai_service.browser_missing_hint(msg)
+            if hint:
+                self._append_log(hint)
+                QMessageBox.warning(self, "缺少浏览器内核", hint)
+            else:
+                QMessageBox.critical(self, "连接失败", msg)
+        self._update_proj_item(s)
+
+    def _route_busy(self, s, v):
+        s.busy = v
+        if self.current is s:
+            self._set_busy(v)
+
+    def _route_batch(self, s, ok, total, targets):
+        if self.current is s:
+            self._on_batch_done(ok, total, targets)
+        self._update_proj_item(s)
+
+    def _route_comment(self, s, key, ok, val):
+        if self.current is s:
+            self._on_comment_done(key, ok, val)
+
+    # ---- 每会话定时器 tick ----
+    def _session_refresh_tick(self, s):
+        if not s.auto_refresh:
+            return
+        s.selected_backup = [a.key() for a in self._selected_aps_session(s)]
+        if not s.refresh_inflight and s.service.connected:
+            self._refresh_session(s, quiet=True)
+        self._schedule_refresh_session(s)
+
+    def _session_monitor_tick(self, s):
+        if not s.monitor_targets:
+            return
+        if not s.refresh_inflight and s.service.connected:
+            self._refresh_session(s, quiet=True)
+        self._schedule_monitor_session(s)
+
+    # ---- 会话级操作 ----
+    def _refresh_session(self, s, quiet=True):
+        if s.refresh_inflight or not s.service.connected:
+            return
+        s.refresh_inflight = True
+        import threading
+
+        def worker():
+            b = s.bridge
+            try:
+                aps = s.service.fetch_ap_list()
+                b.sig_aps.emit(aps)
+            except Exception as ex:
+                b.sig_log.emit("刷新失败：%s" % ex)
+            finally:
+                b.sig_refresh_done.emit()
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _connect_session(self, s):
+        """连接指定项目（从项目配置取参数）。"""
+        if s.busy:
+            return
+        p = s.proj
+        host = (p.get("host") or "").strip()
+        user = (p.get("user") or "").strip()
+        pwd = p.get("password") or ""
+        if not host or not user or not pwd:
+            if self.current is s:
+                QMessageBox.warning(self, "提示",
+                                    "请先在项目里填写地址、用户和密码")
+            return
+        port = p.get("port") or 80
+        try:
+            port = int(port)
+        except (TypeError, ValueError):
+            port = 80
+        s.busy = True
+        if self.current is s:
+            self._set_busy(True)
+            self._set_status("连接中...", C_WARN)
+            self._append_log("── 开始连接 %s ──" % host)
+        import threading
+        use_https = (p.get("scheme") == "HTTPS")
+        headless = p.get("headless", True)
+
+        def worker():
+            b = s.bridge
+            try:
+                try:
+                    s.service.set_headless(headless)
+                except RuntimeError as ex:
+                    b.sig_log.emit("提示：%s（将继续用当前模式连接）" % ex)
+                s.service.start()
+                s.service.connect(host, port, use_https, user, pwd)
+                b.sig_connected.emit()
+            except Exception as ex:
+                b.sig_busy.emit(False)
+                b.sig_connect_failed.emit(str(ex))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _selected_aps_session(self, s) -> list:
+        """当前视图的选中（仅对 current 有意义）。"""
+        if self.current is not s:
+            return []
+        return self._selected_aps()
+
+    # ---- 监视（会话级状态机，逻辑同单项目版） ----
+    def _check_monitor_session(self, s, aps):
+        if not s.monitor_targets:
+            return
+        newly_offline, newly_recovered = [], []
+        for ap in aps:
+            info = s.monitor_targets.get(ap.key())
+            if info is None:
+                continue
+            st = info.get("state")
+            if st == "waiting":
+                if not ap.is_alive():
+                    info["state"] = "seen_offline"
+                    newly_offline.append(ap.name)
+            elif st == "seen_offline":
+                if ap.is_alive():
+                    info["state"] = "recovered"
+                    newly_recovered.append(ap.name)
+        for nm in newly_offline:
+            if self.current is s:
+                self._append_log("[已断开] %s" % nm)
+        for nm in newly_recovered:
+            if self.current is s:
+                self._append_log("[已恢复] %s" % nm)
+        if newly_recovered:
+            if all(v.get("state") == "recovered"
+                   for v in s.monitor_targets.values()):
+                s.monitor_targets.clear()
+                s.just_recovered = True
+
+    def _schedule_refresh_session(self, s):
+        if not s.auto_refresh:
+            return
+        if s.timer_refresh is None:
+            self._wire_session(s)
+        s.timer_refresh.start(
+            int(self.cmb_refresh.currentText().rstrip("s")) * 1000)
+
+    def _schedule_monitor_session(self, s):
+        if not s.monitor_targets:
+            return
+        if s.timer_monitor is None:
+            self._wire_session(s)
+        s.timer_monitor.start(
+            int(self.cmb_refresh.currentText().rstrip("s")) * 1000)
+
+    # ==============================================================
+    # 项目管理（新建/删除/切换/侧边栏）
+    # ==============================================================
+    def _add_session(self, proj: dict, select=True):
+        s = ProjectSession(proj)
+        self.sessions[s.pid] = s
+        self._wire_session(s)
+        self._render_proj_list()
+        if select:
+            self._select_session(s.pid)
+        return s
+
+    def _select_session(self, pid: str):
+        if pid not in self.sessions:
+            return
+        # 保存当前 UI 表单值到旧项目（用户可能改了输入框）
+        self._sync_form_to_current_proj()
+        self.current = self.sessions[pid]
+        self._pdata["active"] = pid
+        # 表单回填
+        self._fill_form_from_proj(self.current.proj)
+        # 渲染该会话的现有数据
+        self.model.set_aps(self.current.ap_list, self.current.monitor_targets)
+        self._sync_action_buttons()
+        self._set_status(self._status_text(),
+                         C_OK if self.current.service.connected else C_ERR)
+        # 日志面板清空（各项目日志在文件里，界面显示当前项目会话内新日志）
+        self.txt_log.clear()
+        self._append_log("── 切换到项目「%s」 ──" % self.current.name)
+        # 【修复】按钮可用性跟随新会话的 busy 状态（原：连着的会话把按钮
+        # 禁用后切走再切回，按钮状态不刷新）
+        self._set_busy(self.current.busy)
+        self._render_proj_list()
+        ikuai_projects.save(self._pdata)
+
+    def _fill_form_from_proj(self, p: dict):
+        self.edit_host.setText(str(p.get("host", "")))
+        self.edit_port.setText(str(p.get("port", 80)))
+        self.cmb_scheme.setCurrentText(p.get("scheme", "HTTP"))
+        self.edit_user.setText(str(p.get("user", "admin")))
+        self.chk_remember.setChecked(bool(p.get("remember", False)))
+        self.chk_autologin.setChecked(bool(p.get("autologin", False)))
+        self.chk_headless.setChecked(bool(p.get("headless", True)))
+        pw = p.get("password") or ""
+        self.edit_password.setText(pw if p.get("remember") else "")
+
+    def _sync_form_to_current_proj(self):
+        """UI 表单 -> 当前项目配置（切换/保存时调用）。"""
+        if self.current is None:
+            return
+        p = self.current.proj
+        p["host"] = self.edit_host.text().strip()
+        try:
+            p["port"] = int(self.edit_port.text())
+        except ValueError:
+            p["port"] = 80
+        p["scheme"] = self.cmb_scheme.currentText()
+        p["user"] = self.edit_user.text().strip()
+        p["remember"] = self.chk_remember.isChecked()
+        p["autologin"] = self.chk_autologin.isChecked()
+        p["headless"] = self.chk_headless.isChecked()
+        if p["remember"]:
+            p["password"] = self.edit_password.text()
+        ikuai_projects.save(self._pdata)
+
+    def _render_proj_list(self):
+        self.proj_list.blockSignals(True)
+        self.proj_list.clear()
+        for pid, s in self.sessions.items():
+            p = s.proj
+            title = p.get("name", "未命名")
+            state = s.state_text()
+            sub = "%s|%s|%s" % (p.get("scheme", "HTTP"),
+                                p.get("host", "") or "-",
+                                p.get("port", ""))
+            it = QListWidgetItem()
+            it.setText("%s\n%s\n%s" % (title, state, sub))
+            it.setData(Qt.UserRole, pid)
+            # 状态色
+            color = (C_OK if "已连接" in state or "已恢复" in state
+                     else C_WARN if "连接中" in state or "重启中" in state
+                     else C_ERR)
+            it.setForeground(QColor(color))
+            self.proj_list.addItem(it)
+            if self.current is s:
+                self.proj_list.setCurrentItem(it)
+        self.proj_list.blockSignals(False)
+
+    def _update_proj_item(self, s):
+        """某会话状态变化 -> 刷新侧边栏（轻量：全量重绘，项目数少）。"""
+        self._render_proj_list()
+
+    def _on_proj_item_clicked(self, item):
+        pid = item.data(Qt.UserRole)
+        if pid:
+            self._select_session(pid)
+
+    def _on_proj_context_menu(self, pos):
+        item = self.proj_list.itemAt(pos)
+        if not item:
+            return
+        pid = item.data(Qt.UserRole)
+        s = self.sessions.get(pid)
+        if not s:
+            return
+        menu = QMenu(self)
+        if s.service.connected:
+            menu.addAction("断开此项目", lambda: self._disconnect_session(s))
+        else:
+            menu.addAction("连接此项目", lambda: self._connect_session(s))
+        menu.addAction("编辑项目设置", lambda: self._edit_project_dialog(s.proj))
+        menu.addSeparator()
+        menu.addAction("删除项目", lambda: self.on_delete_project())
+        menu.exec(self.proj_list.viewport().mapToGlobal(pos))
+
+    def _disconnect_session(self, s):
+        s.busy = True
+        if s.timer_refresh:
+            s.timer_refresh.stop()
+        if s.timer_monitor:
+            s.timer_monitor.stop()
+        s.monitor_targets = {}
+        s.refresh_inflight = False
+        if self.current is s:
+            self._set_status("正在断开...", C_WARN)
+            self._append_log("正在断开连接...")
+            self._set_busy(True)
+        import threading
+
+        def worker():
+            try:
+                s.service.stop()
+            except Exception as ex:
+                s.bridge.sig_log.emit("关闭浏览器时出错：%s" % ex)
+            s.bridge.sig_disconnected.emit()
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    # ---- 新建项目弹窗 ----
+    def on_new_project(self):
+        dlg = ProjectDialog(self, title="新建项目")
+        if dlg.exec() == QDialog.Accepted and dlg.proj_data:
+            proj = ikuai_projects._default_project()
+            proj.update(dlg.proj_data)
+            self._pdata["projects"].append(proj)
+            ikuai_projects.save(self._pdata)
+            self._add_session(proj, select=True)
+            self._append_log("已新建项目「%s」" % proj["name"])
+
+    def _edit_project_dialog(self, proj: dict):
+        dlg = ProjectDialog(self, title="编辑项目", proj=proj)
+        if dlg.exec() == QDialog.Accepted and dlg.proj_data:
+            old_name = proj.get("name")
+            proj.update(dlg.proj_data)
+            ikuai_projects.save(self._pdata)
+            if self.current and self.current.proj is proj:
+                self._fill_form_from_proj(proj)
+            self._render_proj_list()
+            self._append_log("项目「%s」设置已更新" % proj["name"])
+
+    def on_delete_project(self):
+        if not self.current:
+            QMessageBox.information(self, "提示", "没有可删除的项目")
+            return
+        s = self.current
+        name = s.name
+        btn = QMessageBox.question(
+            self, "删除项目",
+            "确定删除项目「%s」吗？\n\n若该项目已连接将同时断开；\n"
+            "日志文件会保留在 logs 目录。" % name,
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if btn != QMessageBox.Yes:
+            return
+        # 断开
+        if s.service.connected or s.service.browser_started:
+            try:
+                s.service.stop()
+            except Exception:
+                pass
+        if s.timer_refresh:
+            s.timer_refresh.stop()
+        if s.timer_monitor:
+            s.timer_monitor.stop()
+        # 移除
+        self.sessions.pop(s.pid, None)
+        self._pdata["projects"] = [p for p in self._pdata["projects"]
+                                   if p["id"] != s.pid]
+        if self._pdata.get("active") == s.pid:
+            self._pdata["active"] = ""
+        ikuai_projects.save(self._pdata)
+        ikuai_projects.close_logger(name)
+        # 切换到剩余项目
+        self.current = None
+        if self.sessions:
+            self._select_session(next(iter(self.sessions)))
+        else:
+            self.model.set_aps([], {})
+            self._sync_action_buttons()
+            self._set_status("未连接", C_ERR)
+            self.txt_log.clear()
+        self._render_proj_list()
 
     def _svc_log(self, line: str):
         """service 在工作线程调用 -> 经信号投递到 UI 线程。"""
@@ -848,7 +1764,7 @@ class MainWindow(QMainWindow):
     # ==============================================================
     # 配置
     # ==============================================================
-    def _load_config(self):
+    def _load_config_into_ui(self):
         try:
             data = ikuai_config.load_config()
         except Exception:
@@ -931,6 +1847,10 @@ class MainWindow(QMainWindow):
     # 连接 / 断开
     # ==============================================================
     def on_connect(self):
+        """连接按钮：同步表单到当前项目后走会话连接。"""
+        if not self.current:
+            QMessageBox.information(self, "提示", "请先新建或选择一个项目")
+            return
         if self.busy:
             return
         host = self.edit_host.text().strip()
@@ -942,35 +1862,10 @@ class MainWindow(QMainWindow):
         if not user or not password:
             QMessageBox.warning(self, "提示", "请填写登录用户和密码")
             return
-        try:
-            port = int(self.edit_port.text())
-        except ValueError:
-            QMessageBox.warning(self, "提示", "端口必须是数字")
-            return
-
-        self._save_config()
-        self._set_busy(True)
-        self._set_status("连接中...", C_WARN)
-        self._append_log("── 开始连接 %s ──" % host)
-        use_https = self.cmb_scheme.currentText() == "HTTPS"
-        headless = self.chk_headless.isChecked()
-
-        def worker():
-            b = self.bridge
-            try:
-                try:
-                    self.service.set_headless(headless)
-                except RuntimeError as ex:
-                    b.sig_log.emit("提示：%s（将继续用当前模式连接）" % ex)
-                self.service.start()
-                self.service.connect(host, port, use_https, user, password)
-                b.sig_connected.emit()
-            except Exception as ex:
-                b.sig_busy.emit(False)
-                b.sig_status.emit("连接失败")
-                b.sig_connect_failed.emit(str(ex))
-
-        threading.Thread(target=worker, daemon=True).start()
+        # 表单 -> 项目（密码也要带上）
+        self._sync_form_to_current_proj()
+        self.current.proj["password"] = password
+        self._connect_session(self.current)
 
     def _on_connected_ok(self):
         self._set_busy(False)
@@ -993,25 +1888,11 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "连接失败", msg)
 
     def on_disconnect(self):
-        if self.busy:
+        if not self.current:
             return
-        self.timer_refresh.stop()
-        self.timer_monitor.stop()
-        self.monitor_targets = {}
-        self.ap_list = []
-        self._refresh_inflight = False
-        self._set_status("正在断开...", C_WARN)
-        self._append_log("正在断开连接...")
-        self._set_busy(True)
-
-        def worker():
-            try:
-                self.service.stop()
-            except Exception as ex:
-                self.bridge.sig_log.emit("关闭浏览器时出错：%s" % ex)
-            self.bridge.sig_disconnected.emit()
-
-        threading.Thread(target=worker, daemon=True).start()
+        if self.current.busy:
+            return
+        self._disconnect_session(self.current)
 
     def _on_disconnected(self):
         self._set_busy(False)
@@ -1024,39 +1905,34 @@ class MainWindow(QMainWindow):
     # 刷新
     # ==============================================================
     def on_refresh(self, quiet: bool = False):
-        if self._refresh_inflight:
+        if not self.current:
             return
-        if not self.service.connected:
+        s = self.current
+        if s.refresh_inflight:
+            return
+        if not s.service.connected:
             self._append_log("请先连接路由器")
             return
-        self._refresh_inflight = True
+        s.refresh_inflight = True
         if not quiet:
             self._set_status("读取中...", C_WARN)
 
         def worker():
-            b = self.bridge
+            b = s.bridge
             try:
-                aps = self.service.fetch_ap_list()
+                aps = s.service.fetch_ap_list()
                 b.sig_aps.emit(aps)
             except NotConnectedError as ex:
-                b.sig_status.emit("未连接")
                 b.sig_log.emit("未连接：%s" % ex)
             except Exception as ex:
                 b.sig_log.emit("刷新失败：%s" % ex)
-                b.sig_status.emit("刷新失败")
             finally:
                 b.sig_refresh_done.emit()
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _on_refresh_done(self):
-        self._refresh_inflight = False
-        self._set_status(self._status_text(), C_OK)
-        self._just_recovered = False
-
     def _render_aps(self, aps: list):
         self.ap_list = list(aps)
-        self._check_monitor(aps)
         self.model.set_aps(aps, self.monitor_targets)
         self._sync_action_buttons()
         self._set_status(self._status_text(), C_OK)
@@ -1254,48 +2130,19 @@ class MainWindow(QMainWindow):
             self._set_status(self._status_text(), C_OK)
 
     # ==============================================================
-    # 监视（三态状态机，与 Tk 版一致）
+    # 监视（转发到当前会话）
     # ==============================================================
     def _schedule_monitor(self):
-        if not self.monitor_targets:
-            return
-        self.timer_monitor.stop()
-        self.timer_monitor.start(int(self.cmb_refresh.currentText().rstrip("s")) * 1000)
+        if self.current and self.current.monitor_targets:
+            self._schedule_monitor_session(self.current)
 
     def _monitor_tick(self):
-        if not self.monitor_targets:
-            return
-        if not self._refresh_inflight and self.service.connected:
-            self.on_refresh(quiet=True)
-        self._schedule_monitor()
+        if self.current:
+            self._session_monitor_tick(self.current)
 
     def _check_monitor(self, aps: list[APInfo]):
-        if not self.monitor_targets:
-            return
-        newly_offline, newly_recovered = [], []
-        for ap in aps:
-            info = self.monitor_targets.get(ap.key())
-            if info is None:
-                continue
-            state = info.get("state")
-            if state == "waiting":
-                if not ap.is_alive():
-                    info["state"] = "seen_offline"
-                    newly_offline.append(ap.name)
-            elif state == "seen_offline":
-                if ap.is_alive():
-                    info["state"] = "recovered"
-                    newly_recovered.append(ap.name)
-        for nm in newly_offline:
-            self._append_log("[已断开] %s" % nm)
-        for nm in newly_recovered:
-            self._append_log("[已恢复] %s" % nm)
-        if newly_recovered:
-            all_done = all(v.get("state") == "recovered"
-                           for v in self.monitor_targets.values())
-            if all_done:
-                self.monitor_targets.clear()
-                self._just_recovered = True
+        if self.current:
+            self._check_monitor_session(self.current, aps)
 
     def _status_text(self) -> str:
         n = len(self.ap_list)
@@ -1365,57 +2212,110 @@ class MainWindow(QMainWindow):
             self._set_status("备注保存失败", C_ERR)
 
     # ==============================================================
-    # 自动刷新开关
+    # 自动刷新开关（作用于当前会话）
     # ==============================================================
     def _on_autorefresh_toggle(self, on: bool):
-        self.auto_refresh = on
+        if not self.current:
+            return
+        self.current.auto_refresh = on
         if on:
-            self._schedule_refresh()
+            self._schedule_refresh_session(self.current)
             self._append_log("已开启自动刷新（%s）" % self.cmb_refresh.currentText())
         else:
-            self.timer_refresh.stop()
+            if self.current.timer_refresh:
+                self.current.timer_refresh.stop()
             self._append_log("已停止自动刷新，列表已静止（可放心勾选）")
 
     def _on_refresh_change(self, _txt):
-        if self.auto_refresh:
-            self.timer_refresh.stop()
-            self._schedule_refresh()
+        if self.current and self.current.auto_refresh:
+            if self.current.timer_refresh:
+                self.current.timer_refresh.stop()
+            self._schedule_refresh_session(self.current)
 
     def _schedule_refresh(self):
-        if not self.auto_refresh:
-            return
-        self.timer_refresh.start(
-            int(self.cmb_refresh.currentText().rstrip("s")) * 1000)
+        if self.current:
+            self._schedule_refresh_session(self.current)
 
     def _auto_refresh_tick(self):
-        if not self.auto_refresh:
-            return
-        # 备份选中，刷新后恢复（整表 reset 会丢选中）
-        self._selected_keys_backup = [a.key() for a in self._selected_aps()]
-        if not self._refresh_inflight and self.service.connected:
-            self.on_refresh(quiet=True)
-        self._schedule_refresh()
+        if self.current:
+            self._session_refresh_tick(self.current)
 
     # ==============================================================
-    # 关闭
+    # 无边框窗口：边缘拖拽缩放（Windows 原生 WM_NCHITTEST）
+    # ==============================================================
+    _RESIZE_MARGIN = 6          # 命中边缘的判定宽度（px）
+
+    def nativeEvent(self, eventType, message):
+        """把窗口边缘 6px 映射为系统的 resize 区：所有边+四角可拖缩放。
+
+        QSizeGrip 方案的问题：放状态栏会与系统自带 grip 双显；放表格
+        角部又随滚动条显隐时隐时现。原生命中测试不依赖任何可见控件，
+        行为与普通窗口一致（光标也会变成 ↔↕↘ 形）。
+        """
+        if eventType != "windows_generic_MSG":
+            return super().nativeEvent(eventType, message)
+        try:
+            import ctypes
+            from ctypes import wintypes
+            msg = ctypes.wintypes.MSG.from_address(int(message))
+            if msg.message != 0x0084:            # WM_NCHITTEST
+                return super().nativeEvent(eventType, message)
+            # 鼠标屏幕坐标
+            x = ctypes.c_short(msg.lParam & 0xFFFF).value
+            y = ctypes.c_short((msg.lParam >> 16) & 0xFFFF).value
+            gx = self.mapToGlobal(QPoint(0, 0))
+            w, h = self.width(), self.height()
+            m = self._RESIZE_MARGIN
+            left = x < gx.x() + m
+            right = x >= gx.x() + w - m
+            top = y < gx.y() + m
+            bottom = y >= gx.y() + h - m
+            HIT = {
+                (True, False, False, False): 10,   # HTLEFT
+                (False, True, False, False): 11,   # HTRIGHT
+                (False, False, True, False): 12,   # HTTOP
+                (False, False, False, True): 15,   # HTBOTTOM
+                (True, False, True, False): 13,    # HTTOPLEFT
+                (False, True, True, False): 14,    # HTTOPRIGHT
+                (True, False, False, True): 16,    # HTBOTTOMLEFT
+                (False, True, False, True): 17,    # HTBOTTOMRIGHT
+            }
+            hit = HIT.get((left, right, top, bottom))
+            if hit:
+                return True, hit
+        except Exception:
+            pass
+        return super().nativeEvent(eventType, message)
+
+    # ==============================================================
+    # 关闭（断开全部会话）
     # ==============================================================
     def closeEvent(self, event):
         if self._closing:
             event.accept()
             return
         self._closing = True
-        self.timer_refresh.stop()
-        self.timer_monitor.stop()
-        self._save_config()
-        # 立即关窗口；浏览器由守护线程在后台收尾（不卡 UI，Tk v1.6 的教训）
-        threading.Thread(target=self._bg_stop, daemon=True).start()
-        event.accept()
+        self._sync_form_to_current_proj()
+        services = [s.service for s in self.sessions.values()]
+        for s in self.sessions.values():
+            if s.timer_refresh:
+                s.timer_refresh.stop()
+            if s.timer_monitor:
+                s.timer_monitor.stop()
+            try:
+                ikuai_projects.close_logger(s.name)
+            except Exception:
+                pass
 
-    def _bg_stop(self):
-        try:
-            self.service.stop()
-        except Exception:
-            pass
+        def bg_stop_all():
+            for svc in services:
+                try:
+                    svc.stop()
+                except Exception:
+                    pass
+
+        threading.Thread(target=bg_stop_all, daemon=True).start()
+        event.accept()
 
 
 def _now() -> str:
